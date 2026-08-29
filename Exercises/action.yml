@@ -1,0 +1,75 @@
+name: "Build, Cache & Security Scan"
+description: "Standardized build pipeline with dependency caching and artifact verification."
+
+inputs:
+  node-version:
+    description: "Node.js runtime version to configure"
+    required: false
+    default: "20"
+  environment:
+    description: "Target build environment (staging or production)"
+    required: true
+    default: "staging"
+  enable-security-scan:
+    description: "Whether to run local dependency security audit"
+    required: false
+    default: "true"
+
+outputs:
+  build-artifact-name:
+    description: "Unique identifier of the generated build package"
+    value: ${{ steps.package-step.outputs.artifact-name }}
+  cache-hit:
+    description: "Whether the dependency cache was exact-matched"
+    value: ${{ steps.restore-cache.outputs.cache-hit }}
+
+runs:
+  using: "composite"
+  steps:
+    # 1. Setup Node.js runtime
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+      shell: bash # MANDATORY: shell required on every run step in composite actions
+
+    # 2. Dependency Caching via hashFiles
+    - name: Cache Node Modules
+      id: restore-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.npm
+        key: npm-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: |
+          npm-${{ runner.os }}-
+          npm-
+
+    # 3. Install Dependencies
+    - name: Install Dependencies
+      run: |
+        echo "Installing dependencies for environment: ${{ inputs.environment }}"
+        npm ci
+      shell: bash
+
+    # 4. Optional Security Audit (Conditional execution inside composite action)
+    - name: Run Security Audit
+      if: ${{ inputs.enable-security-scan == 'true' }}
+      run: npm audit --audit-level=high
+      shell: bash
+
+    # 5. Build and Export Step Outputs via GITHUB_OUTPUT
+    - name: Compile Application and Set Output
+      id: package-step
+      run: |
+        npm run build --if-present
+        ARTIFACT_ID="app-build-${{ inputs.environment }}-${{ github.sha }}"
+        echo "artifact-name=$ARTIFACT_ID" >> $GITHUB_OUTPUT
+        echo "Successfully generated artifact: $ARTIFACT_ID"
+      shell: bash
+
+    # 6. Inline Polyglot Example (Running Python in composite step)
+    - name: Verify Environment Manifest
+      run: |
+        import json, os
+        print(f"Verified build for commit {os.getenv('GITHUB_SHA')}")
+      shell: python
