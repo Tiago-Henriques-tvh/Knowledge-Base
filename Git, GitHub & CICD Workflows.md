@@ -892,29 +892,137 @@ jobs:
           echo "Processing Date: ${{ steps.triage-step.outputs.date }}"
 ```
 
+## GitHub Packages
+
+### GitHub Packages & Core Architecture
+
+GitHub Packages is an integrated software package hosting service that allows you to store, manage, and distribute software packages (dependencies, libraries, and container images) privately or publicly alongside your source code.
+
+- **Key Use Cases:**
+- Centralizing code and package management within a single platform.
+- Sharing proprietary libraries securely across internal enterprise teams without setting up third-party package registries.
+- Linking software packages directly to commits, pull requests, and GitHub Actions CI/CD workflows for full supply-chain end-to-end traceability.
+- Consolidating access control, billing, and team permissions under your existing GitHub organization.
+
+- **Supported Ecosystems & Registry Endpoints:**
+
+| Package Type                      | Registry Endpoint URL                                                                            | Package Naming / Scoping Requirement |
+| --------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------ |
+| **Container Images (OCI/Docker)** | `ghcr.io`                                                                                        | `ghcr.io/OWNER/PACKAGE-NAME`         |
+| **npm (JavaScript)**              | `[https://npm.pkg.github.com](https://npm.pkg.github.com)`                                       | `@OWNER/PACKAGE-NAME`                |
+| **NuGet (.NET)**                  | `[https://nuget.pkg.github.com/OWNER/index.json](https://nuget.pkg.github.com/OWNER/index.json)` | `OWNER.PACKAGE-NAME`                 |
+| **Maven (Java)**                  | `[https://maven.pkg.github.com/OWNER/REPOSITORY](https://maven.pkg.github.com/OWNER/REPOSITORY)` | `com.OWNER.app`                      |
+| **RubyGems (Ruby)**               | `[https://rubygems.pkg.github.com/OWNER](https://rubygems.pkg.github.com/OWNER)`                 | `PACKAGE-NAME`                       |
+
+- **Scoping & Package Visibility Rules:**
+- Package names **must** be explicitly scoped to the repository owner or organization name (e.g., `@my-org/my-package`).
+- By default, a package published from a private repository inherits **private** visibility, while a package published from a public repository is **public**.
+- Packages can have their permissions configured independently of the underlying source code repository.
+
 ---
 
-## 11. How It All Connects
+### Publishing Packages via GitHub Actions Workflows
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│                                                                │
-│   Git & GitHub Architectural Ecosystem                         │
-│     │                                                          │
-│     ├── Local Lifecycle: Working Directory ──► Staging ──► Local Repo
-│     │                                                          │
-│     ├── Remote Sync: Local Repo ──► `git push` ──► GitHub Remote
-│     │                                                          │
-│     ├── Collaboration: Feature Branches ──► PR ──► Code Review
-│     │                                                          │
-│     └── Automation (CI/CD):                                    │
-│           ├── Trigger: PR / Push Event                         │
-│           ├── Execution: GitHub Workflow (.yml)                │
-│           └── Runner: Executes Linters, Tests, & Builds        │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
+Automating package publication in a CI pipeline removes manual publishing steps and ensures packages are only pushed when code passes verification or when a release is created.
 
+#### A. Mandatory Workflow Permissions (`permissions`)
+
+Every job that publishes a package **must** declare the `packages: write` permission scope. Without this explicit scope, the build step will fail with an HTTP 403 Forbidden error.
+
+```yaml
+permissions:
+  contents: read # To read repo files
+  packages: write # MANDATORY to publish/delete packages in GitHub Packages
 ```
+
+#### B. The `GITHUB_TOKEN` vs. Personal Access Tokens (PATs)
+
+- **Automatic Authentication:** Workflows automatically inherit `${{ secrets.GITHUB_TOKEN }}`. This short-lived token has sufficient rights to publish packages to the **same repository** where the workflow runs.
+- **Cross-Repository Publishing:** If your workflow needs to publish a package to a **different repository** or an **organization-level registry** outside the workflow's immediate scope, you cannot use `GITHUB_TOKEN`. You must use a **Personal Access Token (PAT)** with the `write:packages` scope stored in GitHub Secrets.
+
+### sPublishing Examples
+
+#### Example 1: Publishing an NPM Package
+
+To publish an npm package, you must point npm to `[https://npm.pkg.github.com](https://npm.pkg.github.com)`, configure the `@scope`, and pass `NODE_AUTH_TOKEN`.
+
+```yaml
+name: Publish NPM Package
+
+on:
+  release:
+    types: [published] # Triggers when a official release tag is published
+
+jobs:
+  publish-npm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@${{ github.repository_owner }}" # Maps @owner to GitHub Packages
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Publish Package
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Authenticates npm CLI
+```
+
+#### Example 2: Publishing a Container Image to `ghcr.io`
+
+Publishing OCI/Docker images to the GitHub Container Registry (`ghcr.io`) uses `docker/login-action`.
+
+```yaml
+name: Build and Push Container Image
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  publish-container:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Docker Image
+        run: |
+          # Lowercase the repository name to satisfy OCI specs
+          IMAGE_NAME=$(echo "ghcr.io/${{ github.repository }}" | tr '[A-Z]' '[a-z]')
+
+          docker build -t $IMAGE_NAME:latest -t $IMAGE_NAME:${{ github.sha }} .
+          docker push $IMAGE_NAME --all-tags
+```
+
+---
+
+---
+
+---
 
 **FOR EXAM OF GITHUB ACTIONS**
 Focus on Hands-On Concepts: Make sure you've built (or reviewed the docs for):
@@ -922,6 +1030,8 @@ Focus on Hands-On Concepts: Make sure you've built (or reviewed the docs for):
 - Custom composite actions
 - Matrix builds & caching mechanisms
 - OIDC authentication to cloud providers (AWS/Azure/GCP)
+
+---
 
 ## 1. Custom Composite Actions
 
